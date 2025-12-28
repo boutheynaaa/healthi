@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # MongoDB for Patient Records
+  mongodb:
+    image: mongo:7.0
+    container_name: healthinsight-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - healthinsight-net
+
+  # Riak KV for Real-time Monitoring
+  riak1:
+    image: basho/riak-kv
+    container_name: healthinsight-riak1
+    ports:
+      - "8098:8098"
+      - "8087:8087"
+    environment:
+      - CLUSTER_NAME=healthinsight
+    networks:
+      - healthinsight-net
+
+  # Hadoop Master for Batch Processing
+  hadoop-master:
+    image: stephanederrode/docker-cluster-hadoop-spark-python-8:3.2
+    container_name: healthinsight-hadoop-master
+    hostname: hadoop-master
+    ports:
+      - "9870:9870"  # HDFS NameNode Web UI
+      - "8088:8088"  # YARN ResourceManager
+      - "7077:7077"  # Spark Master
+      - "8080:8080"  # Spark Master Web UI
+      - "9000:9000"  # HDFS
+    networks:
+      - healthinsight-net
+    volumes:
+      - ./src:/opt/healthinsight
+      - ./data:/opt/data
+
+  # Hadoop Worker 1
+  hadoop-worker1:
+    image: stephanederrode/docker-cluster-hadoop-spark-python-8:3.2
+    container_name: healthinsight-worker1
+    hostname: hadoop-worker1
+    networks:
+      - healthinsight-net
+
+  # Hadoop Worker 2
+  hadoop-worker2:
+    image: stephanederrode/docker-cluster-hadoop-spark-python-8:3.2
+    container_name: healthinsight-worker2
+    hostname: hadoop-worker2
+    networks:
+      - healthinsight-net
+
+networks:
+  healthinsight-net:
+    driver: bridge
+
+volumes:
+  mongodb_data:
