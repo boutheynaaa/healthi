@@ -1,10 +1,5 @@
-"""
-HealthInsight Population Health Analytics
-Batch processing with Apache Spark for Q5 daily statistics
-"""
-
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, avg, count, when, year, month, dayofmonth
+from pyspark.sql.functions import min, max, col, avg, count, when, year, month, dayofmonth
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, ArrayType
 
 def create_spark_session():
@@ -27,11 +22,11 @@ def analyze_patient_demographics(spark, input_path):
     # Read patient data
     df = spark.read.json(input_path)
     
-    print(f"\n📊 Total Patients: {df.count()}")
+    print(f"\n Total Patients: {df.count()}")
     
     # Age statistics
     print("\n1. AGE DISTRIBUTION")
-    print("-" * 50)
+   
     age_stats = df.select(
         avg("age").alias("avg_age"),
         min("age").alias("min_age"),
