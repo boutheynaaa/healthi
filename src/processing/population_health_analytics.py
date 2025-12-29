@@ -97,7 +97,6 @@ def main():
     spark = create_spark_session()
     
     try:
-        # Input path - adjust based on where data is mounted in container
         input_path = "/opt/data/raw/patients.json"
         
         results = analyze_patient_demographics(spark, input_path)
