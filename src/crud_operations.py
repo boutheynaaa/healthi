@@ -2,7 +2,6 @@ from pymongo import MongoClient
 import requests
 from datetime import datetime, timedelta
 import time
-import json
 from pprint import pprint
 
 MONGODB_URI = "mongodb://admin:password123@localhost:27017/"
@@ -14,13 +13,14 @@ class HealthInsightCRUD:
         self.db = self.mongo_client['healthinsight']
         self.patients = self.db['patients']
         
-       
+        # Check MongoDB connection
         try:
-            self.patients.find_one()
+            self.mongo_client.admin.command('ping')
             print("✓ MongoDB connected successfully")
         except Exception as e:
             print(f"✗ MongoDB connection failed: {e}")
         
+        # Check Riak KV connection
         try:
             response = requests.get(f"{RIAK_URL}/ping", timeout=2)
             if response.status_code == 200:
@@ -29,16 +29,15 @@ class HealthInsightCRUD:
                 print(f"✗ Riak KV returned status: {response.status_code}")
         except Exception as e:
             print(f"✗ Riak KV connection failed: {e}")
-    
+
     def print_patient_details(self, patient_id, label="CURRENT STATE"):
         patient = self.patients.find_one({"patient_id": patient_id}, {"_id": 0})
-        
         if not patient:
             print(f"   Patient {patient_id} not found")
             return None
         
         print(f"\n  {label}:")
-        print(f"   {'─' * 60}")
+        print(f"   {'─'*60}")
         print(f"   Patient ID    : {patient['patient_id']}")
         print(f"   Name          : {patient['name']}")
         print(f"   Age           : {patient['age']} years")
@@ -46,44 +45,24 @@ class HealthInsightCRUD:
         print(f"   Phone         : {patient['contact']['phone']}")
         print(f"   City          : {patient['contact']['city']}")
         print(f"   Risk Score    : {patient['risk_score']}/10")
-        
         conditions = patient['medical_history'].get('conditions', [])
         print(f"   Conditions    : {', '.join(conditions) if conditions else 'None'}")
-        
         allergies = patient['medical_history'].get('allergies', [])
         print(f"   Allergies     : {', '.join(allergies) if allergies else 'None'}")
-        
         print(f"   Blood Type    : {patient['medical_history']['blood_type']}")
         print(f"   Notes         : {patient.get('notes', 'N/A')}")
-        
-        # Show risk score history if exists
         if 'risk_score_history' in patient:
             print(f"\n  Risk Score History:")
-            for entry in patient['risk_score_history'][-3:]:  # Last 3 changes
+            for entry in patient['risk_score_history'][-3:]:
                 print(f"      {entry['timestamp'][:19]}: {entry['previous_score']} → {entry['score']}")
-        
-        print(f"   {'─' * 60}")
+        print(f"   {'─'*60}")
         return patient
-    
+
     def q1_insert_monitoring_event(self, patient_id, event_data):
-        """Q1: Insert patient monitoring events with < 100ms latency"""
         start_time = time.time()
-        
         event_key = f"{patient_id}_{int(datetime.now().timestamp() * 1000)}"
         event_data['patient_id'] = patient_id
         event_data['timestamp'] = datetime.now().isoformat()
-        
-        print(f"\n  INSERTING EVENT:")
-        print(f"   {'─' * 60}")
-        print(f"   Patient ID        : {patient_id}")
-        print(f"   Heart Rate        : {event_data['heart_rate']} bpm")
-        print(f"   Blood Pressure    : {event_data['blood_pressure']['systolic']}/{event_data['blood_pressure']['diastolic']} mmHg")
-        print(f"   O2 Saturation     : {event_data['oxygen_saturation']}%")
-        print(f"   Temperature       : {event_data['temperature']}°C")
-        print(f"   Status            : {event_data['status']}")
-        print(f"   Timestamp         : {event_data['timestamp'][:19]}")
-        print(f"   Riak Key          : {event_key}")
-        
         try:
             response = requests.put(
                 f"{RIAK_URL}/buckets/monitoring/keys/{event_key}",
@@ -91,135 +70,86 @@ class HealthInsightCRUD:
                 headers={"Content-Type": "application/json"},
                 timeout=2
             )
-            
             latency = (time.time() - start_time) * 1000
-            
             if response.status_code in [200, 204]:
                 status = "✓" if latency < 100 else "⚠"
                 print(f"\n   {status} EVENT STORED SUCCESSFULLY")
                 print(f"   Latency: {latency:.2f}ms (Target: <100ms)")
-                print(f"   {'─' * 60}")
+                print(f"   {'─'*60}")
                 return True, latency
             else:
                 print(f"\n   ✗ Insert failed - HTTP {response.status_code}")
                 return False, latency
-                
-        except requests.exceptions.ConnectionError:
-            print(f"\n   ✗ Cannot connect to Riak KV on {RIAK_URL}")
-            return False, 0
         except Exception as e:
             latency = (time.time() - start_time) * 1000
             print(f"\n   ✗ Error - {e}")
             return False, latency
-    
+
     def q2_retrieve_last_readings(self, patient_id, n=20):
-        """Q2: Retrieve last N readings for a patient"""
-        print(f"\n   🔍 RETRIEVING LAST {n} READINGS:")
-        print(f"   {'─' * 60}")
-        
         try:
-            response = requests.get(
-                f"{RIAK_URL}/buckets/monitoring/keys?keys=true",
-                timeout=5
-            )
-            
-            if response.status_code == 200:
-                keys = response.json().get('keys', [])
-                patient_keys = [k for k in keys if k.startswith(patient_id)]
-                patient_keys.sort(reverse=True)
-                
-                print(f"   Total events found: {len(patient_keys)}")
-                print(f"   Retrieving: {min(n, len(patient_keys))} most recent")
-                print()
-                
-                readings = []
-                for key in patient_keys[:n]:
-                    event_response = requests.get(
-                        f"{RIAK_URL}/buckets/monitoring/keys/{key}",
-                        timeout=2
-                    )
-                    if event_response.status_code == 200:
-                        readings.append(event_response.json())
-                
-                if readings:
-                    print(f"   READINGS RETRIEVED:")
-                    print(f"   {'─' * 60}")
-                    for i, reading in enumerate(readings[:5], 1):
-                        bp = reading.get('blood_pressure', {})
-                        status_icon = "⚠️" if reading.get('status') == 'ABNORMAL' else "✓"
-                        print(f"   {i}. [{reading.get('timestamp', '')[:19]}] {status_icon}")
-                        print(f"      HR: {reading.get('heart_rate')} bpm | "
-                              f"BP: {bp.get('systolic', 'N/A')}/{bp.get('diastolic', 'N/A')} | "
-                              f"O2: {reading.get('oxygen_saturation')}% | "
-                              f"Temp: {reading.get('temperature')}°C")
-                    
-                    if len(readings) > 5:
-                        print(f"\n   ... and {len(readings) - 5} more readings")
-                
-                print(f"\n   ✓ Retrieved {len(readings)} readings successfully")
-                print(f"   {'─' * 60}")
-                return readings
-            else:
+            response = requests.get(f"{RIAK_URL}/buckets/monitoring/keys?keys=true", timeout=5)
+            if response.status_code != 200:
                 print(f"   ✗ HTTP {response.status_code}")
                 return []
-            
-        except requests.exceptions.ConnectionError:
-            print(f"   ✗ Cannot connect to Riak KV")
-            return []
+            keys = response.json().get('keys', [])
+            patient_keys = sorted([k for k in keys if k.startswith(patient_id)], reverse=True)
+            readings = []
+            for key in patient_keys[:n]:
+                r = requests.get(f"{RIAK_URL}/buckets/monitoring/keys/{key}", timeout=2)
+                if r.status_code == 200:
+                    readings.append(r.json())
+            return readings
         except Exception as e:
             print(f"   ✗ Error - {e}")
             return []
-    
+
     def q3_update_patient_profile(self, patient_id, updates):
-        """Q3: Update patient profile with before/after comparison"""
-        print(f"\n   🔄 UPDATING PATIENT PROFILE:")
-        print(f"   {'─' * 60}")
-        
-        try:
-            # Get BEFORE state
-            print("\n   📌 BEFORE UPDATE:")
-            before = self.print_patient_details(patient_id, "BEFORE UPDATE")
-            
-            if not before:
-                return False
-            
-            # Show what will be updated
-            print(f"\n   🔧 CHANGES TO APPLY:")
-            print(f"   {'─' * 60}")
-            for key, value in updates.items():
-                if '.' in key:
-                    parts = key.split('.')
-                    old_value = before
-                    for part in parts:
-                        old_value = old_value.get(part, 'N/A') if isinstance(old_value, dict) else 'N/A'
-                else:
-                    old_value = before.get(key, 'N/A')
-                
-                print(f"   {key}:")
-                print(f"      OLD: {old_value}")
-                print(f"      NEW: {value}")
-            
-            # Perform update
-            result = self.patients.update_one(
-                {"patient_id": patient_id},
-                {"$set": updates}
-            )
-            
-            if result.modified_count > 0 or result.matched_count > 0:
-                # Get AFTER state
-                print(f"\n   AFTER UPDATE:")
-                self.print_patient_details(patient_id, "AFTER UPDATE")
-                
-                print(f"\n   ✓ Profile updated successfully")
-                print(f"   {'─' * 60}")
-                return True
-            else:
-                print(f"\n   ⚠ No changes made (data already up to date)")
-                return True
-                
-        except Exception as e:
-            print(f"\n   ✗ Error - {e}")
+        patient = self.patients.find_one({"patient_id": patient_id})
+        if not patient:
+            print(f"   ✗ Patient {patient_id} not found")
             return False
+        # Filter only actual changes
+        filtered_updates = {}
+        for key, value in updates.items():
+            parts = key.split('.')
+            old = patient
+            for p in parts:
+                old = old.get(p, None) if isinstance(old, dict) else None
+            if old != value:
+                filtered_updates[key] = value
+        if not filtered_updates:
+            print(f"   ⚠ No actual changes to update")
+            return True
+        self.patients.update_one({"patient_id": patient_id}, {"$set": filtered_updates})
+        print(f"\n   ✓ Profile updated successfully")
+        return True
+
+    def q6_maintain_risk_score(self, patient_id, new_risk_score):
+        patient = self.patients.find_one({"patient_id": patient_id})
+        if not patient:
+            print(f"   ✗ Patient {patient_id} not found")
+            return False
+        old_score = patient.get('risk_score', 0)
+        if new_risk_score == old_score:
+            print(f"   No change in risk score, skipping history update")
+            return True
+        self.patients.update_one(
+            {"patient_id": patient_id},
+            {
+                "$set": {"risk_score": new_risk_score, "risk_score_updated": datetime.now().isoformat()},
+                "$push": {"risk_score_history": {"score": new_risk_score,
+                                                 "previous_score": old_score,
+                                                 "timestamp": datetime.now().isoformat()}}
+            }
+        )
+        print(f"   ✓ Risk score updated successfully")
+        return True
+
+    def close(self):
+        self.mongo_client.close()
+
+# The rest of Q4, Q5, demo_all_queries and main() remain as in your original script
+
     
     def q4_detect_abnormal_readings(self, time_window_minutes=60):
         """Q4: Detect abnormal readings across multiple patients"""
@@ -377,13 +307,13 @@ class HealthInsightCRUD:
             print(f"   DAILY HOSPITAL STATISTICS - {datetime.now().strftime('%Y-%m-%d')}")
             print(f"   {'═'*60}\n")
             
-            print(f"   👥 PATIENT DEMOGRAPHICS")
+            print(f"    PATIENT DEMOGRAPHICS")
             print(f"   {'─' * 60}")
             print(f"   Total Patients        : {total_patients}")
             print(f"   Average Age           : {age_stats[0]['avg_age']:.1f} years")
             print(f"   Age Range             : {age_stats[0]['min_age']} - {age_stats[0]['max_age']} years")
             
-            print(f"\n   ⚧ GENDER DISTRIBUTION")
+            print(f"\n    GENDER DISTRIBUTION")
             print(f"   {'─' * 60}")
             for g in gender_stats:
                 gender = "Male" if g['_id'] == 'M' else "Female"
@@ -455,11 +385,11 @@ class HealthInsightCRUD:
             # Determine risk level
             def get_risk_level(score):
                 if score >= 7:
-                    return "HIGH RISK ⚠️"
+                    return "HIGH RISK "
                 elif score >= 4:
-                    return "MEDIUM RISK ⚡"
+                    return "MEDIUM RISK "
                 else:
-                    return "LOW RISK ✓"
+                    return "LOW RISK "
             
             print(f"   Patient: {patient['name']}")
             print(f"   Current Risk Score: {old_score}/10 - {get_risk_level(old_score)}")
@@ -470,7 +400,7 @@ class HealthInsightCRUD:
             elif new_risk_score < old_score:
                 print(f"   Change: ⬇️  DECREASED by {old_score - new_risk_score} points")
             else:
-                print(f"   Change: ➡️  No change")
+                print(f"   Change:   No change")
             
             # Perform update
             result = self.patients.update_one(
@@ -507,9 +437,8 @@ class HealthInsightCRUD:
             return False
     
     def demo_all_queries(self):
-        """Run complete demonstration of all query patterns"""
+        """ query patterns"""
         print("\n" + "="*70)
-        print(" " * 15 + "HealthInsight CRUD Operations Demo")
         print(" " * 10 + "Demonstrating all mandatory query patterns (Q1-Q6)")
         print("="*70)
         
@@ -521,7 +450,7 @@ class HealthInsightCRUD:
             return
         
         test_patient_id = sample_patient['patient_id']
-        print(f"\n🎯 Using test patient: {test_patient_id}")
+        print(f"\n Using test patient: {test_patient_id}")
         
         # Q1: Insert monitoring event
         print("\n" + "="*70)

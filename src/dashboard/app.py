@@ -4,9 +4,9 @@ import requests
 from datetime import datetime, timedelta
 import plotly.graph_objs as go
 import plotly.express as px
-from collections import Counter
 import json
 import traceback
+import subprocess
 
 app = Flask(__name__)
 
@@ -17,7 +17,6 @@ try:
     mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
     db = mongo_client['healthinsight']
     patients_collection = db['patients']
-   
     mongo_client.server_info()
     print("✓ MongoDB connected successfully")
 except Exception as e:
@@ -36,18 +35,12 @@ def get_overview():
             return jsonify({'error': 'Database not connected'}), 500
             
         total_patients = patients_collection.count_documents({})
-        
-        # High risk patients
         high_risk = patients_collection.count_documents({"risk_score": {"$gte": 7}})
         
-        # Average age
-        pipeline = [
-            {"$group": {"_id": None, "avg_age": {"$avg": "$age"}}}
-        ]
+        pipeline = [{"$group": {"_id": None, "avg_age": {"$avg": "$age"}}}]
         age_result = list(patients_collection.aggregate(pipeline))
         avg_age = age_result[0]['avg_age'] if age_result else 0
         
-        # Active monitoring (simulated - patients admitted in last 30 days)
         thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
         active_monitoring = patients_collection.count_documents({
             "admission_date": {"$gte": thirty_days_ago}
@@ -60,8 +53,22 @@ def get_overview():
             'active_monitoring': active_monitoring
         })
     except Exception as e:
-        print(f"Error in get_overview: {e}")
-        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/batch_results')
+def get_batch_results():
+    """Get results from Spark batch processing"""
+    try:
+        # Try to read results from HDFS
+        cmd = "hdfs dfs -cat /analytics/results/batch_results.json/*.json 2>/dev/null | head -1"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        
+        if result.returncode == 0 and result.stdout:
+            data = json.loads(result.stdout)
+            return jsonify(data)
+        else:
+            return jsonify({'status': 'no_results', 'message': 'Batch analytics not yet run'})
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/age_distribution')
@@ -71,10 +78,8 @@ def get_age_distribution():
         if patients_collection is None:
             return jsonify({'error': 'Database not connected'}), 500
         
-        # Get all patients and manually bucket them
         all_patients = list(patients_collection.find({}, {"age": 1, "_id": 0}))
         
-        # Count by age groups
         age_18_29 = sum(1 for p in all_patients if p['age'] < 30)
         age_30_49 = sum(1 for p in all_patients if 30 <= p['age'] < 50)
         age_50_64 = sum(1 for p in all_patients if 50 <= p['age'] < 65)
@@ -103,8 +108,6 @@ def get_age_distribution():
         
         return jsonify(json.loads(fig.to_json()))
     except Exception as e:
-        print(f"Error in age_distribution: {e}")
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/gender_distribution')
@@ -114,10 +117,7 @@ def get_gender_distribution():
         if patients_collection is None:
             return jsonify({'error': 'Database not connected'}), 500
             
-        pipeline = [
-            {"$group": {"_id": "$gender", "count": {"$sum": 1}}}
-        ]
-        
+        pipeline = [{"$group": {"_id": "$gender", "count": {"$sum": 1}}}]
         results = list(patients_collection.aggregate(pipeline))
         
         labels = [r['_id'] for r in results]
@@ -140,8 +140,6 @@ def get_gender_distribution():
         
         return jsonify(json.loads(fig.to_json()))
     except Exception as e:
-        print(f"Error in gender_distribution: {e}")
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/risk_distribution')
@@ -184,8 +182,6 @@ def get_risk_distribution():
         
         return jsonify(json.loads(fig.to_json()))
     except Exception as e:
-        print(f"Error in risk_distribution: {e}")
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/city_distribution')
@@ -195,16 +191,13 @@ def get_city_distribution():
         if patients_collection is None:
             return jsonify({'error': 'Database not connected'}), 500
             
-        # Get all patients and extract city from nested contact
         all_patients = list(patients_collection.find({}, {"contact.city": 1, "_id": 0}))
         
-        # Count cities manually
         city_counts = {}
         for patient in all_patients:
             city = patient.get('contact', {}).get('city', 'Unknown')
             city_counts[city] = city_counts.get(city, 0) + 1
         
-        # Sort by count
         sorted_cities = sorted(city_counts.items(), key=lambda x: x[1], reverse=True)
         
         cities = [item[0] for item in sorted_cities]
@@ -231,8 +224,6 @@ def get_city_distribution():
         
         return jsonify(json.loads(fig.to_json()))
     except Exception as e:
-        print(f"Error in city_distribution: {e}")
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/conditions_distribution')
@@ -242,18 +233,15 @@ def get_conditions_distribution():
         if patients_collection is None:
             return jsonify({'error': 'Database not connected'}), 500
             
-        # Get all patients and extract conditions
         all_patients = list(patients_collection.find({}, {"medical_history.conditions": 1, "_id": 0}))
         
-        # Count conditions manually
         condition_counts = {}
         for patient in all_patients:
             conditions = patient.get('medical_history', {}).get('conditions', [])
             for condition in conditions:
-                if condition:  # Skip empty strings
+                if condition and condition != "None":
                     condition_counts[condition] = condition_counts.get(condition, 0) + 1
         
-        # Sort and get top 8
         sorted_conditions = sorted(condition_counts.items(), key=lambda x: x[1], reverse=True)[:8]
         
         conditions = [item[0] for item in sorted_conditions]
@@ -280,8 +268,6 @@ def get_conditions_distribution():
         
         return jsonify(json.loads(fig.to_json()))
     except Exception as e:
-        print(f"Error in conditions_distribution: {e}")
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/blood_type_distribution')
@@ -291,16 +277,13 @@ def get_blood_type_distribution():
         if patients_collection is None:
             return jsonify({'error': 'Database not connected'}), 500
             
-        # Get all patients and extract blood type
         all_patients = list(patients_collection.find({}, {"medical_history.blood_type": 1, "_id": 0}))
         
-        # Count blood types manually
         blood_type_counts = {}
         for patient in all_patients:
             blood_type = patient.get('medical_history', {}).get('blood_type', 'Unknown')
             blood_type_counts[blood_type] = blood_type_counts.get(blood_type, 0) + 1
         
-        # Sort by count
         sorted_blood_types = sorted(blood_type_counts.items(), key=lambda x: x[1], reverse=True)
         
         blood_types = [item[0] for item in sorted_blood_types]
@@ -322,8 +305,6 @@ def get_blood_type_distribution():
         
         return jsonify(json.loads(fig.to_json()))
     except Exception as e:
-        print(f"Error in blood_type_distribution: {e}")
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/recent_patients')
@@ -347,15 +328,12 @@ def get_recent_patients():
         
         return jsonify(patients)
     except Exception as e:
-        print(f"Error in recent_patients: {e}")
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/abnormal_readings')
 def get_abnormal_readings():
     """Get patients with recent abnormal readings"""
     try:
-        # Get keys from Riak
         response = requests.get(f"{RIAK_URL}/buckets/monitoring/keys?keys=true", timeout=5)
         
         if response.status_code != 200:
@@ -364,8 +342,7 @@ def get_abnormal_readings():
         keys = response.json().get('keys', [])
         abnormal_patients = []
         
-        # Check recent events (sample for performance)
-        for key in keys[:100]:  # Limit to avoid timeout
+        for key in keys[:100]:
             try:
                 event_response = requests.get(
                     f"{RIAK_URL}/buckets/monitoring/keys/{key}",
@@ -391,15 +368,12 @@ def get_abnormal_readings():
         
         return jsonify(abnormal_patients)
     except Exception as e:
-        print(f"Error in abnormal_readings: {e}")
-        traceback.print_exc()
         return jsonify([])
 
 @app.route('/api/monitoring_trends')
 def get_monitoring_trends():
-    """Get monitoring trends over time (simulated)"""
+    """Get monitoring trends over time"""
     try:
-        # For demo purposes, create trend data
         hours = list(range(24))
         normal_counts = [45 + (i % 6) * 3 for i in range(24)]
         abnormal_counts = [8 - (i % 4) * 2 if i % 4 != 0 else 12 for i in range(24)]
@@ -437,11 +411,44 @@ def get_monitoring_trends():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/system_health')
+def get_system_health():
+    """Check health of all system components"""
+    health = {
+        'mongodb': False,
+        'riak': False,
+        'hadoop': False,
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    # Check MongoDB
+    try:
+        mongo_client.server_info()
+        health['mongodb'] = True
+    except:
+        pass
+    
+    # Check Riak
+    try:
+        r = requests.get(f"{RIAK_URL}/ping", timeout=2)
+        health['riak'] = r.status_code == 200
+    except:
+        pass
+    
+    # Check Hadoop
+    try:
+        result = subprocess.run("hdfs dfsadmin -report", shell=True, capture_output=True, timeout=5)
+        health['hadoop'] = result.returncode == 0
+    except:
+        pass
+    
+    return jsonify(health)
+
 if __name__ == '__main__':
     print("=" * 60)
-    print("HealthInsight Dashboard Starting...")
+    print("🏥 HealthInsight Dashboard Starting...")
     print("=" * 60)
-    print("Dashboard URL: http://localhost:5000")
+    print("📊 Dashboard URL: http://localhost:5000")
     print("Press Ctrl+C to stop")
     print("=" * 60)
     app.run(debug=True, host='0.0.0.0', port=5000)

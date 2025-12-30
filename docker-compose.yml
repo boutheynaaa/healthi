@@ -14,6 +14,12 @@ services:
       - mongodb_data:/data/db
     networks:
       - healthinsight-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # Riak KV for Real-time Monitoring
   riak1:
@@ -26,6 +32,12 @@ services:
       - CLUSTER_NAME=healthinsight
     networks:
       - healthinsight-net
+    healthcheck:
+      test: ["CMD", "riak", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # Hadoop Master for Batch Processing
   hadoop-master:
@@ -38,11 +50,17 @@ services:
       - "7077:7077"  # Spark Master
       - "8080:8080"  # Spark Master Web UI
       - "9000:9000"  # HDFS
+      - "4040:4040"  # Spark Job UI
     networks:
       - healthinsight-net
     volumes:
       - ./src:/opt/healthinsight
       - ./data:/opt/data
+      - hadoop_namenode:/hadoop/dfs/name
+    environment:
+      - CLUSTER_NAME=healthinsight
+    stdin_open: true
+    tty: true
 
   # Hadoop Worker 1
   hadoop-worker1:
@@ -51,6 +69,12 @@ services:
     hostname: hadoop-worker1
     networks:
       - healthinsight-net
+    volumes:
+      - hadoop_datanode1:/hadoop/dfs/data
+    depends_on:
+      - hadoop-master
+    stdin_open: true
+    tty: true
 
   # Hadoop Worker 2
   hadoop-worker2:
@@ -59,6 +83,12 @@ services:
     hostname: hadoop-worker2
     networks:
       - healthinsight-net
+    volumes:
+      - hadoop_datanode2:/hadoop/dfs/data
+    depends_on:
+      - hadoop-master
+    stdin_open: true
+    tty: true
 
 networks:
   healthinsight-net:
@@ -66,3 +96,6 @@ networks:
 
 volumes:
   mongodb_data:
+  hadoop_namenode:
+  hadoop_datanode1:
+  hadoop_datanode2:
